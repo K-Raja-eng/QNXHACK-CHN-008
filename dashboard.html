@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QNX Reservoir Digital Twin</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#0d1520;color:#eef4fb}
+header{padding:20px 24px;border-bottom:1px solid #2a3a4b}h1{margin:0;font-size:24px}
+main{padding:20px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.card{background:#142131;border:1px solid #2b3e52;border-radius:12px;padding:16px}.wide{grid-column:1/-1}
+.label{font-size:12px;opacity:.7}.value{font-size:28px;font-weight:700;margin-top:6px}
+input{padding:10px;border-radius:6px;border:1px solid #52677c;background:#09111b;color:white}.btn{padding:10px 14px;border-radius:6px;border:0;cursor:pointer}
+.status{font-size:18px;font-weight:700}.muted{opacity:.75;font-size:12px}
+table{width:100%;border-collapse:collapse}td{padding:8px;border-bottom:1px solid #243446}
+</style>
+</head>
+<body>
+<header>
+  <h1>QNX Reservoir & Flood Digital Twin</h1>
+  <div class="muted">Educational prototype — advisory output only</div>
+</header>
+<main>
+  <div class="card wide">
+    <label>Raspberry Pi IP</label>
+    <input id="pi" value="192.168.1.100">
+    <button class="btn" onclick="connectWs()">Connect</button>
+    <span id="conn" class="muted">Disconnected</span>
+  </div>
+  <div class="card"><div class="label">Reservoir Level</div><div id="level" class="value">--</div></div>
+  <div class="card"><div class="label">Storage</div><div id="storage" class="value">--</div></div>
+  <div class="card"><div class="label">Rainfall Now</div><div id="rain" class="value">--</div></div>
+  <div class="card"><div class="label">Downstream Level</div><div id="downstream" class="value">--</div></div>
+  <div class="card"><div class="label">Predicted Level</div><div id="predlevel" class="value">--</div></div>
+  <div class="card"><div class="label">Predicted Inflow</div><div id="predflow" class="value">--</div></div>
+  <div class="card"><div class="label">Flood Risk</div><div id="risk" class="status">--</div></div>
+  <div class="card"><div class="label">Advisory</div><div id="advisory" class="status">--</div></div>
+  <div class="card wide">
+    <table>
+      <tr><td>Arduino Mic 1 / Mic 2</td><td id="amic">--</td></tr>
+      <tr><td>Arduino Gas / IR</td><td id="agasir">--</td></tr>
+      <tr><td>Arduino Temperature / Humidity</td><td id="ath">--</td></tr>
+    </table>
+  </div>
+  <div class="card wide">
+    <table>
+      <tr><td>Upstream inflow</td><td id="uin">--</td></tr>
+      <tr><td>Upstream release</td><td id="urel">--</td></tr>
+      <tr><td>Gate position</td><td id="gate">--</td></tr>
+      <tr><td>Rain 6h / 24h / 72h</td><td id="forecast">--</td></tr>
+      <tr><td>Prototype release value</td><td id="release">--</td></tr>
+      <tr><td>Data sources / stale flags</td><td id="sources">--</td></tr>
+      <tr><td>FAST/MED/SLOW timers</td><td id="timers">--</td></tr>
+      <tr><td>Timer jitter</td><td id="jitter">--</td></tr>
+    </table>
+  </div>
+</main>
+<script>
+const p = new URLSearchParams(location.search); if(p.get('pi')) document.getElementById('pi').value=p.get('pi');
+const text = (id,v) => document.getElementById(id).textContent=v;
+const riskName = ['NORMAL','MODERATE','HIGH','CRITICAL'];
+const advName = ['NORMAL MONITORING','PREPARE REVIEW','CONTROLLED RELEASE REVIEW','EMERGENCY PROTOCOL REVIEW'];
+function num(v, fallback=0){ const n=Number(v); return Number.isFinite(n) ? n : fallback; }
+function fmt(v, digits, unit=''){ return num(v).toFixed(digits)+unit; }
+function apply(d){
+  text('level',fmt(d.level_m,2,' m')); text('storage',fmt(d.storage_pct,1,' %')); text('rain',fmt(d.rain_mmph,1,' mm/h'));
+  text('downstream',fmt(d.downstream_m,2,' m')); text('predlevel',fmt(d.predicted_level_m,2,' m')); text('predflow',fmt(d.predicted_inflow_m3s,1,' m³/s'));
+  text('risk',riskName[num(d.flood_risk,-1)]||'UNKNOWN'); text('advisory',advName[num(d.advisory,-1)]||'UNKNOWN');
+  text('uin',fmt(d.upstream_inflow_m3s,1,' m³/s')); text('urel',fmt(d.upstream_release_m3s,1,' m³/s')); text('gate',fmt(d.gate_pct,1,' %'));
+  text('forecast',fmt(d.rain_6h,1)+' / '+fmt(d.rain_24h,1)+' / '+fmt(d.rain_72h,1)+' mm');
+  text('release',fmt(d.prototype_release_m3s,1,' m³/s (prototype)'));
+  text('sources','0x'+num(d.sources).toString(16)+' / stale 0x'+num(d.stale).toString(16));
+  text('timers',num(d.fast)+' / '+num(d.med)+' / '+num(d.slow));
+  text('jitter',fmt(d.jitter_us,2,' µs')+', max '+fmt(d.max_jitter_us,2,' µs')+', misses '+num(d.deadline_misses));
+  if(num(d.arduino_aux_valid)){
+    text('amic',fmt(d.arduino_mic1,0)+' / '+fmt(d.arduino_mic2,0));
+    text('agasir',fmt(d.arduino_gas,0)+' / '+fmt(d.arduino_ir,0));
+    text('ath',fmt(d.temp_c,1,' °C')+' / '+fmt(d.arduino_humidity,1,' %'));
+  }else{
+    text('amic','No Arduino telemetry'); text('agasir','No Arduino telemetry'); text('ath',fmt(d.temp_c,1,' °C'));
+  }
+}
+let ws = null;
+function connectWs(){
+  const ip=document.getElementById('pi').value.trim(); if(!ip) return;
+  if(ws){ try{ws.close()}catch(e){} }
+  ws=new WebSocket('ws://'+ip+':9000');
+  ws.onopen=()=>text('conn','Connected');
+  ws.onclose=()=>{ text('conn','Disconnected'); setTimeout(()=>{ if(ws && ws.readyState===WebSocket.CLOSED) connectWs(); },2000); };
+  ws.onerror=()=>text('conn','Connection error');
+  ws.onmessage=e=>{ try{ apply(JSON.parse(e.data)); } catch(err){ console.error('Dashboard data error:',err,e.data); } };
+}
+</script>
+</body>
+</html>
